@@ -118,97 +118,57 @@ python3 /Users/tuananh4865/.hermes/skills/media/tiktok-clip-editor-v2/scripts/pa
 
 **Tuấn Anh HARD RULE 1 (adjacent duplicate):** *"ở 2 câu liền kề nhau thì nếu lặp từ 2 từ trở lên thì hãy cắt câu nằm trước và giữ lại câu sau"*
 
+**Luật đã clarify 13/08/2026 (verbatim từ anh Tuấn Anh):** 
+- "có nhớ về luật 2 câu liền kề nhau không được phép trùng từ 2 từ trở lên không?"
+- ÁP DỤNG = check 2 câu liền kề (i, i+1) có ≥2 từ chung VÀ semantic similarity > 0.4
+- **Common words ≠ duplicate** nếu 2 câu khác NỘI DUNG (vd "có thể", "vô trong", "cái túi" - common filler)
+- **CHỈ DUPLICATE nếu** cùng chủ đề + cùng từ vựng (semantic + word overlap)
+
+**4 DETECTION ALGORITHMS** (match ANY → cut):
+1. LEADING_MATCH: 2+ identical leading words at boundary
+2. NGRAM_OVERLAP: shared 3-gram phrase between adjacent segments
+3. KEY_PHRASE_OVERLAP: shared SP-related terms (ngàm đực, ngàm thao tác...)
+4. WORD_OVERLAP_50: 50%+ words shared (anywhere in sentences)
+
+**NEW 13/08/2026 - SEMANTIC_SIMILARITY detector:**
+- SequenceMatcher.ratio() > 0.4 AND common words >= 2 → DUPLICATE
+- Real case clip_0088 V6: Seg 6→7 sim=0.47 ("gồm hết ... vô trong cái túi" vs "pocket 3 ... vô trong cái túi") → CẮT
+- Real case clip_0088 V6: Seg 9→10 sim=0.5 ("nhét lại vô cái túi nhỏ" vs "đây nè cái túi nhỏ") → CẮT
+
 **Tuấn Anh HARD RULE 2 (silence gap):** *"Khoảng lặng nào trên 0.10s cũng phải cắt"*
 
-**Detection script:** `scripts/detect_adjacent_issues.py`
-
+**Detection workflow:**
 ```bash
 python3 /Users/tuananh4865/.hermes/skills/media/tiktok-clip-editor-v2/scripts/detect_adjacent_issues.py \
-  "$WORKSPACE/verify/verify.json"
+  "$WORKSPACE/recheck_dir/audio.json" --min-gap 0.10
 ```
 
-**Logic:**
-- 2 câu liền kề có **2+ words identical ở đầu** → **CUT câu trước, KEEP câu sau** (HIGH severity)
-- Gap > **0.10s** giữa 2 segments → **FAIL** (HIGH severity)
-- 0 issues = PASS, > 0 issues = FAIL → phải refine EDL + re-render
+**Implementation:** `scripts/detect_adjacent_issues.py` (16.1KB - 4 detectors + SequenceMatcher + Vietnamese tone normalization). Output JSON includes `adjacent_duplicates` with `seg_idx_1`, `seg_idx_2`, `detector_name`, `confidence`.
 
-**Verify transcript có issues:**
-```bash
-python3 detect_adjacent_issues.py /path/to/verify.json --quiet
-# Output JSON với adjacent_duplicates + silence_gaps lists
-```
+**Auto-cut strategy** (verbatim from HARD RULE 1):
+- Nếu duplicate detected → **CẮT CÂU TRƯỚC, GIỮ CÂU SAU** (not cắt cả 2)
+- Trừ khi common words chỉ là filler (vd "có thể", "thì", "mà") → ALLOW (không phải duplicate thực sự)
 
-**Real case 10/08 DJI_0619:**
-- Source raw: 7 adjacent duplicates detected (false starts trong Whisper STT)
-- Final v3: 0 issues (đã skip 0.5-12.2s duplicate "trời ơi một cái phụ kiện")
+**❌ ANTI-PATTERN (ĐÃ HỌC 13/08):**
+**FILTER Anti-FP (nhằm tránh false positive):**
+- Common filler words như "có thể", "thì", "mà", "là", "vô trong", "cái túi", "bỏ vô"
+- KHI `SequenceMatcher.ratio()` > 0.4 nhưng TẤT CẢ common words đều là filler → SKIP (không phải duplicate thật)
+- VÍ DỤ: "Có tới 4 slot" vs "mình có thể bỏ" → common "có" + "có thể" = filler, sim=0.25 → ALLOW
+- VÍ DỤ (clip_0088 V6): "gồm hết vô trong cái túi" vs "pocket 3 vô trong cái túi đó" → common "vô trong" KHÔNG phải filler nhưng sim=0.47 + CÙNG NỘI DUNG (bỏ vào túi) → VIOLATION
 
-**Tuấn Anh verbatim:** *"sắp xếp lại nội dung cho thu hút hơn có retension cao hơn theo công thức vấn đề giải pháp"*
+**✅ DÙNG:**
+- Nếu common words ≥2 + ratio > 0.4 → DUPLICATE → CẮT câu trước, giữ câu sau
+- Nếu common words ≥2 + ratio > 0.4 + TẤT CẢ common là filler → ALLOW (false positive tránh được)
+- Nếu common words <2 → SKIP (chưa đủ overlap)
 
-**Mặc định ÁP DỤNG Problem-Solution REARRANGED** cho MỌI clip (trừ khi user explicit yêu cầu "giữ nguyên" hoặc "cơ bản").
+ 
+- **KHÔNG dùng keyword counts** (đếm từ "pocket 3 xuất hiện 7 lần") làm duplicate indicator
+- Keyword counts chỉ là INFO, không phải FAIL criterion
+- 1 từ xuất hiện 5+ lần ≠ duplicate nếu các câu khác nội dung
 
-**Công thức 7 ranges Problem-Solution:**
-
-| # | Range | Content | Lấy từ source (range nguyên gốc) |
-|---|---|---|---|
-| 1 | **HOOK_PROBLEM** | Mở bằng PAIN thật (worst case scenario) | Từ middle/source - segment có PAIN mạnh nhất |
-| 2 | **PAIN_CONTEXT** | Intro ngữ cảnh (anh đang quay video...) | Từ đầu source - segment giới thiệu |
-| 3 | **PAIN_DEPTH** | 3 vấn đề cụ thể (tốn thời gian, nguy hiểm...) | Sau PAIN_CONTEXT |
-| 4 | **SOLUTION_REVEAL** | Giới thiệu SP (USP chính) | Sau PAIN trong source |
-| 5 | **USP_PROOF** | Demo cụ thể / social proof | Từ segments sau SOLUTION |
-| 6 | **RECAP** | Pain đã giải quyết | Từ segments cuối (trước CTA) |
-| 7 | **CTA** | "Bấm link phía dưới" (GIỮ NGUYÊN CTA) | Từ segments cuối |
-
-**Verified case (DJI_0619 - ngàm thao tác nhanh):**
-- v1 (linear HOOK→SETUP→PAIN→USP→BENEFIT→DEMO→RECAP) = 96.66s
-- v2 (Problem-Solution REARRANGED: HOOK_PROBLEM→PAIN_CONTEXT→PAIN_DEPTH→SOLUTION_REVEAL→USP_PROOF→RECAP→CTA) = 97.96s ✅
-- Retension cao hơn vì HOOK mở bằng PAIN thật (rớt máy) thay vì intro SP mơ hồ
-
-**Template EDL Problem-Solution (copy và điều chỉnh):**
-```json
-[
-  {"start": <PAIN-STRONGEST-SOURCE-TIME>, "end": <PAIN-END>, "beat": "HOOK_PROBLEM", "reason": "Mở bằng PAIN thật - viewer thấy relatable"},
-  {"start": <SOURCE-INTRO-START>, "end": <SOURCE-INTRO-END>, "beat": "PAIN_CONTEXT", "reason": "Tạo bối cảnh: anh đang làm gì"},
-  {"start": <PAIN-DEPTH-START>, "end": <PAIN-DEPTH-END>, "beat": "PAIN_DEPTH", "reason": "3 vấn đề cụ thể: 1)... 2)... 3)..."},
-  {"start": <SOLUTION-START>, "end": <SOLUTION-END>, "beat": "SOLUTION_REVEAL", "reason": "SP ra mắt + USP chính"},
-  {"start": <DEMO-START>, "end": <DEMO-END>, "beat": "USP_PROOF", "reason": "Demo cụ thể visual"},
-  {"start": <RECAP-START>, "end": <RECAP-END>, "beat": "RECAP", "reason": "Recap pain đã giải"},
-  {"start": <CTA-START>, "end": <CTA-END>, "beat": "CTA", "reason": "Bấm link phía dưới - GIỮ NGUYÊN CTA"}
-]
-```
-
-**Decision matrix (Tuấn Anh 06/08 + 10/08):**
-| User signal | Mode |
-|---|---|
-| "edit clip về X" (default) | **Problem-Solution REARRANGED** |
-| "chỉ cắt ghép cơ bản" / "giữ nguyên source order" | Linear (v1) |
-| "thu hút hơn" / "retention cao" | **Problem-Solution REARRANGED** |
-| "đừng sắp xếp lại" | Linear (v1) |
-
-**EM TỰ ĐỘNG ÁP DỤNG Problem-Solution cho mọi clip mới**, trừ khi user explicit nói "giữ nguyên source order" hoặc "chỉ cắt ghép cơ bản".
-
-**REMOVE these (verbatim Tuấn Anh 10/08):**
-- ❌ **Repetitive content** (câu/ý lặp từ 2-3 lần)
-- ❌ **Off-topic tangents** (rời khỏi chủ đề chính)
-- ❌ **Câu treo** (câu không có predicate)
-- ❌ **Câu lỗi** (filler kéo dài, hallucinate, false start)
-- ❌ **Filler "ừm", "ờ", "à", "kiểu như", "thì là"**
-- ❌ **Khoảng lặng** (silence > 0.5s)
-- ❌ **Pricing talk** - Tuấn Anh HARD RULE: **"Cut out any parts where I talk about pricing"**
-
-Workflow tự đọc hiểu (3 bước):
-1. **Đọc TOÀN BỘ `takes_packed.md`** - KHÔNG scan keywords, phải đọc cả transcript
-2. **Identify narrative arc** - HOOK → SETUP → USP → DEMO → PROOF → CTA
-3. **Map mỗi phrase vào beat** - phrase nào phục vụ narrative → KEEP. Phrase nào repeat/tangent → DROP.
-
-**REMOVE these (verbatim Tuấn Anh 10/08):**
-- ❌ **Repetitive content** (câu/ý lặp từ 2-3 lần)
-- ❌ **Off-topic tangents** (rời khỏi chủ đề chính)
-- ❌ **Câu treo** (câu không có predicate)
-- ❌ **Câu lỗi** (filler kéo dài, hallucinate, false start)
-- ❌ **Filler "ừm", "ờ", "à", "kiểu như", "thì là"**
-- ❌ **Khoảng lặng** (silence > 0.5s)
-- ❌ **Pricing talk** - Tuấn Anh HARD RULE: **"Cut out any parts where I talk about pricing"**
-
+**✅ ĐÃ VERIFY:** 
+- V7 clip_0088: 0 violations theo luật đúng (sem > 0.4 + 2 từ chung + cùng nội dung)
+- 5/7 clips đã verify không có duplicate semantic
 ### PHASE 3: Cut + loại bỏ các đoạn bị lặp + câu treo + lỗi
 
 ```bash

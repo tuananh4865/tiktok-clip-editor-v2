@@ -7,11 +7,14 @@ Tuấn Anh HARD RULE (verbatim 10/08):
 - "timestamp của chúng rất sát nhau và có 2+ từ giống nhau trong 2 câu liền kê"
 - "áp dụng cho toàn bộ transcripts chỉ cần quét thấy có lặp là phải cắt câu trước lấy câu sau"
 
-DETECTION ALGORITHMS (4 chiến thuật - match ANY → cut):
+DETECTION ALGORITHMS (5 chiến thuật - match ANY → cut):
 1. LEADING_MATCH: 2+ identical leading words (existing)
 2. NGRAM_OVERLAP: shared 3-gram phrase between adjacent segments
 3. KEY_PHRASE_OVERLAP: shared SP-related terms like "ngàm đực", "ngàm thao tác"
 4. WORD_OVERLAP_50: 50%+ words shared (anywhere in sentences)
+5. SEMANTIC_SIMILARITY (v3.8 - 13/08/2026): LUẬT 2 CÂU LIỀN KỀ
+   - 2 từ chung giữa 2 câu liền kề + SequenceMatcher.ratio() > 0.4
+   - Anti-FP: common filler words "có thể", "thì", "mà", "vô trong" KHÔNG phải duplicate nếu khác content
 
 ADDITIONAL:
 - Fuzzy matching with `difflib.SequenceMatcher` for Whisper STT variations
@@ -27,6 +30,7 @@ import sys
 import argparse
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 
 def normalize_vn(text: str) -> str:
@@ -254,6 +258,103 @@ def detect_word_overlap_50(segs, threshold=0.5):
                 "text_2": segs[i + 1]["text"].strip()[:80],
             })
     return results
+
+
+
+
+def detect_semantic_similarity_overlap(segs, min_gap=0.50):
+    """13/08/2026: Detect 2 câu liền kề có ≥2 từ chung + SequenceMatcher.ratio() > 0.4.
+    
+    Tuấn Anh LUẬT 2 CÂU LIỀN KỀ (đã clarify 13/08): "có nhớ về luật 2 câu liền kề nhau
+    không được phép trùng từ 2 từ trở lên không?"
+    
+    CHỈ VIOLATION khi CẢ HAI điều kiện:
+    1. ≥2 từ chung giữa 2 câu liền kề (boundary hoặc anywhere)
+    2. SequenceMatcher.ratio() > 0.4 (câu giống nhau về nội dung)
+    
+    Anti-FP: Common filler words như "có thể", "thì", "mà", "vô trong", "cái túi"
+    KHÔNG phải duplicate nếu 2 câu khác NỘI DUNG (ratio < 0.4).
+    
+    Real case clip_0088 V6:
+    - Seg 6→7: "gồm hết toàn bộ vô trong một cái túi" vs "pocket 3 dụt vô trong cái túi đó"
+      ratio=0.47 + common 'vô trong' → DUPLICATE → CẮT
+    - Seg 9→10: "nhét lại vô cái túi nhỏ" vs "đây nè cái túi này nó quá nhỏ"
+      ratio=0.50 + common 'cái túi' → DUPLICATE → CẮT
+    """
+    issues = []
+    
+    for i in range(len(segs) - 1):
+        s1 = segs[i]
+        s2 = segs[i + 1]
+        gap = s2["start"] - s1["end"]
+        if gap > 30 or gap < 0:
+            continue  # Too far apart or overlapping
+        
+        t1 = normalize_vn(s1.get("text", "").strip())
+        t2 = normalize_vn(s2.get("text", "").strip())
+        
+        if len(t1.split()) < 2 or len(t2.split()) < 2:
+            continue
+        
+        words1 = t1.split()
+        words2 = t2.split()
+        
+        # Step 1: Detect 2+ word overlap (boundary OR anywhere)
+        common_count = 0
+        common_words = []
+        
+        # Boundary check (last of t1 == first of t2)
+        for n in [4, 3, 2]:
+            if len(words1) >= n and len(words2) >= n:
+                if tuple(words1[-n:]) == tuple(words2[:n]):
+                    common_count = n
+                    common_words = list(words1[-n:])
+                    break
+        
+        # Anywhere check (any 2 consecutive words match)
+        if common_count == 0:
+            for j in range(len(words1) - 1):
+                pair = (words1[j], words1[j+1])
+                for k in range(len(words2) - 1):
+                    if pair == (words2[k], words2[k+1]):
+                        common_count = 2
+                        common_words = list(pair)
+                        break
+                if common_count > 0:
+                    break
+        
+        if common_count < 2:
+            continue  # No 2+ word overlap
+        
+        # Step 2: Check semantic similarity (SequenceMatcher)
+        ratio = SequenceMatcher(None, t1, t2).ratio()
+        
+        if ratio > 0.4:
+            # Common filler words list (anti-FP)
+            FILLER_WORDS = {"có thể", "thì", "mà", "là", "vô trong", "cái túi", "bỏ vô"}
+            # If ALL common words are filler → skip (false positive)
+            all_filler = all(' '.join(common_words) in fw or fw in ' '.join(common_words)
+                             for fw in FILLER_WORDS)
+            if all_filler:
+                continue
+            
+            issues.append({
+                "seg_idx_1": i,
+                "seg_idx_2": i + 1,
+                "detector": "SEMANTIC_SIMILARITY",
+                "confidence": round(ratio, 2),
+                "common_words": common_words,
+                "common_count": common_count,
+                "text_1": s1.get("text", "")[:100],
+                "text_2": s2.get("text", "")[:100],
+                "reason": f"2 câu liền kề nói về CÙNG chủ đề (sim={ratio:.2f}) + {common_count} từ chung {common_words} → VIOLATION luật 2 câu liền kề",
+                "t1_start": s1.get("start", 0),
+                "t1_end": s1.get("end", 0),
+                "t2_start": s2.get("start", 0),
+                "t2_end": s2.get("end", 0),
+            })
+    
+    return issues
 
 
 def detect_silence_gaps(segs, min_gap=0.10):

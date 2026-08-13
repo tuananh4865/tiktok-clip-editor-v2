@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Verify final output theo các tiêu chí Tuấn Anh 10/08:
+Verify final output theo các tiêu chí Tuấn Anh 10/08 + clarify 13/08:
 - No filler "ừm/ờ/à" trong first 30s (HOOK)
 - No pricing mentions
 - No 5+ words repeated >= 3x in 30s window (no lặp)
 - No off-topic segments
 - Duration 60-90s (TikTok Mode B optimal)
 - v3.7: Adjacent duplicate + silence gap check (CUT prev/KEEP next)
+- v3.8 (13/08): LUẬT 2 CÂU LIỀN KỀ - SemanticSimilarity detector
+    * 2 câu liền kề có ≥2 từ chung + SequenceMatcher.ratio() > 0.4
+    * Common words "có thể", "thì", "mà", "vô trong" ALLOW (different content)
 
 If FAIL → refine EDL + re-render (LOOP).
 If PASS → ship!
@@ -48,8 +51,14 @@ def verify_final(audio_json: str, edl_path: str, final_mp4: str) -> dict:
     # 1. Duration check
     actual_duration = get_duration(final_mp4)
     if actual_duration < 55:
-        issues.append({"check": "DURATION", "severity": "MEDIUM", 
+        issues.append({"check": "DURATION", "severity": "MEDIUM",
                        "msg": f"Duration {actual_duration:.1f}s < 55s (too short)"})
+
+    # KEYWORD COUNTS ANTI-PATTERN (13/08/2026)
+    # NOTE: KHÔNG dùng keyword counts ("pocket 3 xuất hiện 7 lần") làm duplicate indicator.
+    # Keyword counts chỉ là INFO, không phải FAIL criterion.
+    # 1 từ xuất hiện nhiều lần ≠ duplicate nếu các câu khác NỘI DUNG.
+    # Để check duplicate, dùng detect_semantic_similarity_overlap() trong detect_adjacent_issues.py
     elif actual_duration > 130:
         issues.append({"check": "DURATION", "severity": "MEDIUM",
                        "msg": f"Duration {actual_duration:.1f}s > 130s (too long)"})
